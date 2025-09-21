@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  php-apache-environment:
+    container_name: php-apache
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+    depends_on:
+      - mysql
+    volumes:
+      - ./php/htdocs:/var/www/html/
+    ports:
+      - 80:80
+  mysql:
+    image: mysql:latest
+    container_name: mysql
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: user
+      MYSQL_PASSWORD: 1234
+      MYSQL_DATABASE: WEB_APP
+    volumes:
+      - ./php/DB/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - appnet
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    ports:
+    - "8080:80"
+    restart: always
+    environment:
+      PMA_HOST: mysql
+    depends_on:
+      - mysql
+    networks:
+      - appnet
+
+  nextjs:
+    build: ./nextjs
+    container_name: nextjs
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./nextjs:/app
+    command: "npm run dev"
+    depends_on:
+      - mysql
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge
