@@ -16,6 +16,8 @@ pipeline {
 
         stage('Run Containers') {
             steps {
+                // ปิด container เก่า แล้วค่อยรันใหม่
+                sh 'docker-compose down || true'
                 sh 'docker-compose up -d'
             }
         }
@@ -23,23 +25,21 @@ pipeline {
         stage('Test Services') {
             steps {
                 sh 'docker ps'
-                sh 'curl -f http://localhost:3000 || exit 1' // ตรวจสอบว่า Next.js รัน
-            }
-        }
-
-        stage('Clean Up') {
-            steps {
-                sh 'docker system prune -f'
+                sh 'curl -f http://localhost:3000 || exit 1'
             }
         }
     }
 
     post {
+        always {
+            echo "🧹 Cleaning unused Docker images..."
+            sh 'docker image prune -f'
+        }
         success {
             echo '🚀 Deployment Success!'
         }
         failure {
-            echo '❌ Deployment Failed!'
+            echo '❌ Deployment Failed! Check console output.'
         }
     }
 }
