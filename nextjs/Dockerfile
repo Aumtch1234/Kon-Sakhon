@@ -1,5 +1,5 @@
 FROM node:20-bullseye AS builder
-WORKDIR /app
+WORKDIR /src
 
 # ติดตั้ง dependencies ก่อน
 COPY package*.json ./
@@ -12,7 +12,7 @@ RUN npm run build
 
 # Production stage
 FROM node:20-bullseye AS runner
-WORKDIR /app
+WORKDIR /src
 
 COPY package*.json ./
 
@@ -20,9 +20,9 @@ COPY package*.json ./
 RUN npm install --omit=dev
 
 # คัดลอกไฟล์ build ที่จำเป็นเท่านั้น
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/next.config.mjs ./next.config.mjs
+COPY --from=builder /src/.next ./.next
+COPY --from=builder /src/public ./public
+COPY --from=builder /src/next.config.mjs ./next.config.mjs
 
 EXPOSE 3000
 
