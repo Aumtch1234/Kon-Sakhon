@@ -2,11 +2,6 @@ pipeline {
     agent any
 
     stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main', url: 'https://github.com/aumtch1234/kon-sakhon.git'
-            }
-        }
 
         stage('Build Docker Images') {
             steps {
@@ -16,7 +11,6 @@ pipeline {
 
         stage('Run Containers') {
             steps {
-                // ปิด container เก่า แล้วค่อยรันใหม่
                 sh 'docker compose down || true'
                 sh 'docker compose up -d'
             }
