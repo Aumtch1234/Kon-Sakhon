@@ -1,7 +1,7 @@
 # ใช้ Debian-based image แทน Alpine
 FROM node:20-bullseye
 
-WORKDIR /app
+WORKDIR /src
 
 COPY package*.json ./
 
