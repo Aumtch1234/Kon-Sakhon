@@ -8,7 +8,7 @@ RUN npm install
 
 # คัดลอกโค้ดทั้งหมดและ build
 COPY . .
-RUN npm run build
+RUN npm run dev
 
 # 2️⃣ Production stage
 FROM node:20-bullseye AS runner
