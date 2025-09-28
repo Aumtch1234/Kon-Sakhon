@@ -6,50 +6,180 @@ export default function ChatBox({ chat, user, onClose }) {
   const [newMessage, setNewMessage] = useState('');
   const [isMinimized, setIsMinimized] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [roomId, setRoomId] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  // Remove socket.io import for now - use native WebSocket or polling instead
+  const socketRef = useRef(null);
 
-  // Mock messages for demonstration
   useEffect(() => {
-    setMessages([
-      {
-        id: 1,
-        content: 'สวัสดีครับ วันนี้เป็นอย่างไรบ้าง',
-        senderId: chat.id,
-        senderName: chat.name,
-        timestamp: new Date(Date.now() - 30000),
-        type: 'text'
-      },
-      {
-        id: 2,
-        content: 'สวัสดีครับ สบายดีเลยครับ',
-        senderId: user.id,
-        senderName: user.name,
-        timestamp: new Date(Date.now() - 25000),
-        type: 'text'
-      },
-      {
-        id: 3,
-        content: 'งานเป็นอย่างไรบ้างครับ',
-        senderId: chat.id,
-        senderName: chat.name,
-        timestamp: new Date(Date.now() - 20000),
-        type: 'text'
-      },
-      {
-        id: 4,
-        content: 'ยุ่งอยู่เหมือนกันครับ แต่โอเคครับ',
-        senderId: user.id,
-        senderName: user.name,
-        timestamp: new Date(Date.now() - 15000),
-        type: 'text'
+    initializeChat();
+    setupSocketConnection();
+
+    return () => {
+      if (socketRef.current) {
+        leaveRoom();
       }
-    ]);
-  }, []);
+    };
+  }, [chat.id]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  const setupSocketConnection = () => {
+    // Use the main dashboard socket if available
+    if (window.dashboardSocket) {
+      socketRef.current = window.dashboardSocket;
+      setupSocketListeners();
+      setIsConnected(true);
+    }
+  };
+
+  const setupSocketListeners = () => {
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    // Listen for new messages in this chat room
+    socket.on('new_message', (messageData) => {
+      if (messageData.room_id === roomId) {
+        const newMsg = {
+          id: messageData.id || Date.now(),
+          content: messageData.content,
+          senderId: messageData.sender_id,
+          senderName: messageData.sender_name,
+          timestamp: new Date(messageData.created_at || Date.now()),
+          type: 'text'
+        };
+        setMessages(prev => [...prev, newMsg]);
+      }
+    });
+
+    // Listen for typing indicators
+    socket.on('user_typing', (data) => {
+      if (data.room_id === roomId && data.user_id !== user.id) {
+        setIsTyping(true);
+        setTimeout(() => setIsTyping(false), 3000);
+      }
+    });
+
+    socket.on('user_stopped_typing', (data) => {
+      if (data.room_id === roomId && data.user_id !== user.id) {
+        setIsTyping(false);
+      }
+    });
+
+    // Handle room joined
+    socket.on('room_joined', (data) => {
+      if (data.room_id) {
+        setRoomId(data.room_id);
+        loadMessages(data.room_id);
+      }
+    });
+  };
+
+  const initializeChat = async () => {
+    try {
+      // First, get or create a private chat room
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/chat/rooms/private', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          userId: chat.id,
+          userName: chat.name 
+        })
+      });
+
+      if (response.ok) {
+        const roomData = await response.json();
+        setRoomId(roomData.room_id || roomData.id);
+        
+        // Join the room via socket
+        if (socketRef.current) {
+          socketRef.current.emit('join_room', {
+            room_id: roomData.room_id || roomData.id,
+            user_id: user.id
+          });
+        }
+        
+        // Load existing messages
+        loadMessages(roomData.room_id || roomData.id);
+      } else {
+        // Fallback to mock data if API fails
+        setMessages([
+          {
+            id: 1,
+            content: 'สวัสดีครับ วันนี้เป็นอย่างไรบ้าง',
+            senderId: chat.id,
+            senderName: chat.name,
+            timestamp: new Date(Date.now() - 30000),
+            type: 'text'
+          },
+          {
+            id: 2,
+            content: 'สวัสดีครับ สบายดีเลยครับ',
+            senderId: user.id,
+            senderName: user.name,
+            timestamp: new Date(Date.now() - 25000),
+            type: 'text'
+          }
+        ]);
+      }
+    } catch (error) {
+      console.error('Error initializing chat:', error);
+      // Use fallback mock data
+      setMessages([
+        {
+          id: 1,
+          content: 'สวัสดีครับ วันนี้เป็นอย่างไรบ้าง',
+          senderId: chat.id,
+          senderName: chat.name,
+          timestamp: new Date(Date.now() - 30000),
+          type: 'text'
+        }
+      ]);
+    }
+  };
+
+  const loadMessages = async (chatRoomId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/chat/rooms/${chatRoomId}/messages`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const messagesData = await response.json();
+        const formattedMessages = messagesData.map(msg => ({
+          id: msg.id,
+          content: msg.content,
+          senderId: msg.sender_id,
+          senderName: msg.sender_name,
+          timestamp: new Date(msg.created_at),
+          type: 'text'
+        }));
+        setMessages(formattedMessages);
+      }
+    } catch (error) {
+      console.error('Error loading messages:', error);
+    }
+  };
+
+  const leaveRoom = () => {
+    if (socketRef.current && roomId) {
+      socketRef.current.emit('leave_room', {
+        room_id: roomId,
+        user_id: user.id
+      });
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -57,23 +187,62 @@ export default function ChatBox({ chat, user, onClose }) {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() || !roomId) return;
 
-    const messageToSend = {
-      id: Date.now(),
-      content: newMessage.trim(),
+    const messageContent = newMessage.trim();
+    setNewMessage('');
+
+    // Optimistically add message to UI
+    const tempMessage = {
+      id: `temp-${Date.now()}`,
+      content: messageContent,
       senderId: user.id,
       senderName: user.name,
       timestamp: new Date(),
-      type: 'text'
+      type: 'text',
+      sending: true
     };
 
-    setMessages(prev => [...prev, messageToSend]);
-    setNewMessage('');
+    setMessages(prev => [...prev, tempMessage]);
 
-    // Auto response simulation
-    setTimeout(() => {
-      setIsTyping(true);
+    try {
+      // Send via socket first for real-time
+      if (socketRef.current) {
+        socketRef.current.emit('send_message', {
+          room_id: roomId,
+          content: messageContent,
+          sender_id: user.id,
+          sender_name: user.name
+        });
+      }
+
+      // Also send via HTTP API for persistence
+      const token = localStorage.getItem('token');
+      await fetch(`/api/chat/rooms/${roomId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          content: messageContent
+        })
+      });
+
+      // Remove the temporary message and let the socket event add the real one
+      setMessages(prev => prev.filter(msg => msg.id !== tempMessage.id));
+
+    } catch (error) {
+      console.error('Error sending message:', error);
+      
+      // If sending fails, show an error state or fallback behavior
+      setMessages(prev => prev.map(msg => 
+        msg.id === tempMessage.id 
+          ? { ...msg, sending: false, error: true }
+          : msg
+      ));
+
+      // Add auto-response for development/testing
       setTimeout(() => {
         const responses = [
           'ได้ครับ',
@@ -92,9 +261,27 @@ export default function ChatBox({ chat, user, onClose }) {
           timestamp: new Date(),
           type: 'text'
         }]);
-        setIsTyping(false);
-      }, 1500);
-    }, 500);
+      }, 1000);
+    }
+  };
+
+  const handleTyping = () => {
+    if (socketRef.current && roomId) {
+      socketRef.current.emit('typing', {
+        room_id: roomId,
+        user_id: user.id,
+        user_name: user.name
+      });
+    }
+  };
+
+  const handleStopTyping = () => {
+    if (socketRef.current && roomId) {
+      socketRef.current.emit('stop_typing', {
+        room_id: roomId,
+        user_id: user.id
+      });
+    }
   };
 
   const getProfileImage = (userId, userName, size = 'w-8 h-8') => {
@@ -124,9 +311,13 @@ export default function ChatBox({ chat, user, onClose }) {
               {getProfileImage(chat.id, chat.name, 'w-8 h-8')}
               <div className="flex items-center space-x-2">
                 <span className="font-medium text-sm">{chat.name}</span>
-                {chat.online && (
-                  <div className="w-2 h-2 bg-green-400 rounded-full"></div>
-                )}
+                <div className="flex items-center space-x-1">
+                  {isConnected ? (
+                    <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                  ) : (
+                    <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></div>
+                  )}
+                </div>
               </div>
             </div>
             <button
@@ -156,13 +347,16 @@ export default function ChatBox({ chat, user, onClose }) {
             <div className="flex flex-col">
               <span className="font-medium text-sm">{chat.name}</span>
               <div className="flex items-center space-x-1">
-                {chat.online ? (
+                {isConnected ? (
                   <>
                     <div className="w-2 h-2 bg-green-400 rounded-full"></div>
                     <span className="text-xs text-green-200">ออนไลน์</span>
                   </>
                 ) : (
-                  <span className="text-xs text-gray-300">ออฟไลน์</span>
+                  <>
+                    <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></div>
+                    <span className="text-xs text-yellow-200">กำลังเชื่อมต่อ</span>
+                  </>
                 )}
               </div>
             </div>
@@ -203,13 +397,25 @@ export default function ChatBox({ chat, user, onClose }) {
               )}
               <div>
                 <div
-                  className={`px-3 py-2 rounded-xl text-sm ${
+                  className={`px-3 py-2 rounded-xl text-sm relative ${
                     message.senderId === user.id
-                      ? 'bg-blue-500 text-white rounded-br-sm'
+                      ? `bg-blue-500 text-white rounded-br-sm ${message.sending ? 'opacity-70' : ''} ${message.error ? 'bg-red-500' : ''}`
                       : 'bg-white text-gray-800 border border-gray-200 rounded-bl-sm'
                   }`}
                 >
                   {message.content}
+                  {message.sending && (
+                    <div className="absolute -right-1 -bottom-1">
+                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                  )}
+                  {message.error && (
+                    <div className="absolute -right-1 -bottom-1">
+                      <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                  )}
                 </div>
                 <div className={`text-xs text-gray-500 mt-1 ${message.senderId === user.id ? 'text-right' : 'text-left'}`}>
                   {formatTime(message.timestamp)}
@@ -254,15 +460,24 @@ export default function ChatBox({ chat, user, onClose }) {
               type="text"
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  handleSendMessage(e);
+                } else {
+                  handleTyping();
+                }
+              }}
+              onBlur={handleStopTyping}
               placeholder="พิมพ์ข้อความ..."
               className="flex-1 px-3 py-2 bg-gray-100 border-0 rounded-full focus:bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all duration-200 text-sm"
+              disabled={!isConnected}
             />
           </div>
           <button
             type="submit"
-            disabled={!newMessage.trim()}
+            disabled={!newMessage.trim() || !isConnected}
             className={`p-2 rounded-full transition-all duration-200 ${
-              newMessage.trim()
+              newMessage.trim() && isConnected
                 ? 'text-blue-500 hover:text-blue-600 hover:bg-blue-50'
                 : 'text-gray-400 cursor-not-allowed'
             }`}

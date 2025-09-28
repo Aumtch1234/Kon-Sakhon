@@ -1,0 +1,270 @@
+-- Chat System Database Schema
+
+-- ตารางห้องแชท
+CREATE TABLE chat_rooms (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  type ENUM('private', 'group') DEFAULT 'private',
+  description TEXT,
+  avatar VARCHAR(500),
+  created_by INT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_type (type),
+  INDEX idx_created_by (created_by),
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- ตารางสมาชิกในห้องแชท
+CREATE TABLE chat_room_members (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  room_id INT NOT NULL,
+  user_id INT NOT NULL,
+  role ENUM('admin', 'member') DEFAULT 'member',
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  is_active BOOLEAN DEFAULT TRUE,
+  UNIQUE KEY unique_room_user (room_id, user_id),
+  INDEX idx_room_id (room_id),
+  INDEX idx_user_id (user_id),
+  INDEX idx_is_active (is_active),
+  FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ตารางข้อความ
+CREATE TABLE chat_messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  room_id INT NOT NULL,
+  sender_id INT NOT NULL,
+  content TEXT NOT NULL,
+  message_type ENUM('text', 'image', 'file', 'emoji') DEFAULT 'text',
+  reply_to INT NULL,
+  is_edited BOOLEAN DEFAULT FALSE,
+  is_deleted BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_room_id (room_id),
+  INDEX idx_sender_id (sender_id),
+  INDEX idx_created_at (created_at),
+  INDEX idx_reply_to (reply_to),
+  FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (reply_to) REFERENCES chat_messages(id) ON DELETE SET NULL
+);
+
+-- ตารางการอ่านข้อความ
+CREATE TABLE chat_message_reads (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  message_id INT NOT NULL,
+  user_id INT NOT NULL,
+  read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_message_user (message_id, user_id),
+  INDEX idx_message_id (message_id),
+  INDEX idx_user_id (user_id),
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ตารางสำหรับแนบไฟล์
+CREATE TABLE chat_attachments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  message_id INT NOT NULL,
+  filename VARCHAR(255) NOT NULL,
+  original_name VARCHAR(255) NOT NULL,
+  file_size INT NOT NULL,
+  file_type VARCHAR(100) NOT NULL,
+  file_path VARCHAR(500) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_message_id (message_id),
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+
+-- ตารางสถานะออนไลน์ของผู้ใช้
+CREATE TABLE user_online_status (
+  user_id INT PRIMARY KEY,
+  is_online BOOLEAN DEFAULT FALSE,
+  last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  socket_id VARCHAR(255),
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_is_online (is_online),
+  INDEX idx_socket_id (socket_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ตารางการพิมพ์ (typing indicator)
+CREATE TABLE chat_typing (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  room_id INT NOT NULL,
+  user_id INT NOT NULL,
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_room_user_typing (room_id, user_id),
+  INDEX idx_room_id (room_id),
+  INDEX idx_started_at (started_at),
+  FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- View สำหรับข้อมูลห้องแชทพร้อมข้อความล่าสุด
+CREATE VIEW chat_rooms_with_last_message AS
+SELECT 
+  cr.id,
+  cr.name,
+  cr.type,
+  cr.description,
+  cr.avatar,
+  cr.created_by,
+  cr.created_at,
+  cr.updated_at,
+  lm.content as last_message,
+  lm.created_at as last_message_time,
+  lm.sender_id as last_sender_id,
+  u.name as last_sender_name,
+  (
+    SELECT COUNT(*) 
+    FROM chat_messages cm 
+    WHERE cm.room_id = cr.id AND cm.is_deleted = FALSE
+  ) as message_count
+FROM chat_rooms cr
+LEFT JOIN (
+  SELECT 
+    room_id,
+    content,
+    created_at,
+    sender_id,
+    ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) as rn
+  FROM chat_messages 
+  WHERE is_deleted = FALSE
+) lm ON cr.id = lm.room_id AND lm.rn = 1
+LEFT JOIN users u ON lm.sender_id = u.id;
+
+-- Stored Procedures
+
+-- สร้างห้องแชทส่วนตัว
+DELIMITER //
+CREATE PROCEDURE CreatePrivateChat(
+  IN p_user1_id INT,
+  IN p_user2_id INT
+)
+BEGIN
+  DECLARE v_room_id INT;
+  DECLARE v_existing_room INT DEFAULT 0;
+  
+  -- ตรวจสอบว่ามีห้องแชทส่วนตัวระหว่างผู้ใช้ 2 คนนี้อยู่แล้วหรือไม่
+  SELECT cr.id INTO v_existing_room
+  FROM chat_rooms cr
+  INNER JOIN chat_room_members crm1 ON cr.id = crm1.room_id AND crm1.user_id = p_user1_id
+  INNER JOIN chat_room_members crm2 ON cr.id = crm2.room_id AND crm2.user_id = p_user2_id
+  WHERE cr.type = 'private'
+  AND (SELECT COUNT(*) FROM chat_room_members WHERE room_id = cr.id) = 2
+  LIMIT 1;
+  
+  IF v_existing_room > 0 THEN
+    SELECT v_existing_room as room_id, 'existing' as status;
+  ELSE
+    -- สร้างห้องแชทใหม่
+    INSERT INTO chat_rooms (name, type, created_by) 
+    VALUES (CONCAT('Private Chat'), 'private', p_user1_id);
+    
+    SET v_room_id = LAST_INSERT_ID();
+    
+    -- เพิ่มสมาชิกทั้งสองคน
+    INSERT INTO chat_room_members (room_id, user_id, role) VALUES 
+    (v_room_id, p_user1_id, 'admin'),
+    (v_room_id, p_user2_id, 'member');
+    
+    SELECT v_room_id as room_id, 'created' as status;
+  END IF;
+END//
+DELIMITER ;
+
+-- อัพเดทสถานะการอ่านข้อความ
+DELIMITER //
+CREATE PROCEDURE MarkMessagesAsRead(
+  IN p_room_id INT,
+  IN p_user_id INT
+)
+BEGIN
+  INSERT INTO chat_message_reads (message_id, user_id)
+  SELECT cm.id, p_user_id
+  FROM chat_messages cm
+  LEFT JOIN chat_message_reads cmr ON cm.id = cmr.message_id AND cmr.user_id = p_user_id
+  WHERE cm.room_id = p_room_id 
+  AND cm.sender_id != p_user_id 
+  AND cmr.id IS NULL
+  AND cm.is_deleted = FALSE;
+  
+  -- อัพเดทเวลาที่เข้าดูห้องล่าสุด
+  UPDATE chat_room_members 
+  SET last_seen_at = CURRENT_TIMESTAMP 
+  WHERE room_id = p_room_id AND user_id = p_user_id;
+END//
+DELIMITER ;
+
+-- ฟังก์ชันนับข้อความที่ยังไม่ได้อ่าน
+DELIMITER //
+CREATE FUNCTION GetUnreadMessageCount(p_room_id INT, p_user_id INT)
+RETURNS INT
+READS SQL DATA
+DETERMINISTIC
+BEGIN
+  DECLARE v_count INT DEFAULT 0;
+  
+  SELECT COUNT(*)
+  INTO v_count
+  FROM chat_messages cm
+  LEFT JOIN chat_message_reads cmr ON cm.id = cmr.message_id AND cmr.user_id = p_user_id
+  WHERE cm.room_id = p_room_id 
+  AND cm.sender_id != p_user_id 
+  AND cmr.id IS NULL
+  AND cm.is_deleted = FALSE;
+  
+  RETURN v_count;
+END//
+DELIMITER ;
+
+-- Indexes เพิ่มเติมเพื่อเพิ่มประสิทธิภาพ
+CREATE INDEX idx_chat_messages_room_created ON chat_messages(room_id, created_at);
+CREATE INDEX idx_chat_room_members_user_room ON chat_room_members(user_id, room_id);
+CREATE INDEX idx_message_reads_user_message ON chat_message_reads(user_id, message_id);
+
+-- Chat rooms table
+CREATE TABLE chat_rooms (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(255),
+    type ENUM('private', 'group') DEFAULT 'private',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Room members table
+CREATE TABLE room_members (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    room_id INT,
+    user_id INT,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_id) REFERENCES chat_rooms(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+-- Messages table
+CREATE TABLE messages (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    room_id INT,
+    sender_id INT,
+    content TEXT,
+    message_type ENUM('text', 'image', 'file') DEFAULT 'text',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (room_id) REFERENCES chat_rooms(id),
+    FOREIGN KEY (sender_id) REFERENCES users(id)
+);
+
+-- Online users table (optional, can use memory)
+CREATE TABLE user_sessions (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id INT,
+    socket_id VARCHAR(255),
+    is_online BOOLEAN DEFAULT TRUE,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);

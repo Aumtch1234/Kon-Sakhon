@@ -53,6 +53,21 @@ services:
     networks:
       - appnet
 
+  socket-server:
+    build:
+      context: ./nextjs
+      dockerfile: Dockerfile-socket
+    container_name: socket-server
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./nextjs:/app
+    depends_on:
+      - mysql
+    networks:
+      - appnet
+
+
 networks:
   appnet:
     driver: bridge

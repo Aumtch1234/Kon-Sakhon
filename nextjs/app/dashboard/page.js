@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { io } from 'socket.io-client';
 import NavBar from '../components/navbar/page';
 import MembersSidebar from '../components/MembersSidebar/page';
 import CreatePost from '../components/CreatePost/page';
@@ -17,16 +18,14 @@ export default function Dashboard() {
   const [members, setMembers] = useState([]);
   const [allComments, setAllComments] = useState({});
   
-  // Chat state
-  const [chatBoxOpen, setChatBoxOpen] = useState(false);
-  const [selectedChat, setSelectedChat] = useState(null);
+  // Chat states
+  const [activeChatBoxes, setActiveChatBoxes] = useState([]);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState([]);
   
-  // Comment dialog states
+  // Dialog states
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState(null);
-  const [comments, setComments] = useState([]);
-  
-  // Profile dialog states
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   
   const router = useRouter();
@@ -36,7 +35,7 @@ export default function Dashboard() {
     window.history.pushState(null, null, window.location.pathname);
     window.addEventListener('popstate', preventBack);
 
-    // Check if user is logged in
+    // Check authentication and initialize
     const token = localStorage.getItem('token');
     const userData = localStorage.getItem('user');
 
@@ -48,8 +47,14 @@ export default function Dashboard() {
     try {
       const parsedUser = JSON.parse(userData);
       setUser(parsedUser);
+      
+      // Load initial data
       loadFeeds();
       loadMembers();
+      
+      // Initialize socket connection
+      initializeSocket(parsedUser);
+      
     } catch (error) {
       console.error('Invalid user data');
       handleLogout();
@@ -66,10 +71,66 @@ export default function Dashboard() {
     window.history.pushState(null, null, window.location.pathname);
   };
 
+  const initializeSocket = (userData) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001', {
+      auth: { token }
+    });
+
+    socket.on('connect', () => {
+      console.log('Dashboard connected to socket server');
+      setSocketConnected(true);
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Dashboard disconnected from socket server');
+      setSocketConnected(false);
+    });
+
+    socket.on('user_online', (data) => {
+      setOnlineUsers(prev => {
+        const updated = prev.filter(u => u.id !== data.userId);
+        return [...updated, { ...data.userData, is_online: true }];
+      });
+
+      // Update members list if needed
+      setMembers(prev => prev.map(member => 
+        member.id === data.userId ? { ...member, is_online: true } : member
+      ));
+    });
+
+    socket.on('user_offline', (data) => {
+      setOnlineUsers(prev => prev.map(user => 
+        user.id === data.userId ? { ...user, is_online: false } : user
+      ));
+
+      // Update members list if needed
+      setMembers(prev => prev.map(member => 
+        member.id === data.userId ? { ...member, is_online: false } : member
+      ));
+    });
+
+    // Store socket reference for cleanup
+    window.dashboardSocket = socket;
+  };
+
   const handleLogout = () => {
+    // Clean up socket connection
+    if (window.dashboardSocket) {
+      window.dashboardSocket.disconnect();
+      delete window.dashboardSocket;
+    }
+    
+    // Clear storage
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    
+    // Remove event listener
     window.removeEventListener('popstate', preventBack);
+    
+    // Redirect
     router.replace('/');
   };
 
@@ -81,11 +142,12 @@ export default function Dashboard() {
           'Authorization': `Bearer ${token}`
         }
       });
+      
       if (response.ok) {
         const data = await response.json();
         setFeeds(data);
 
-        // Load preview comments for all posts
+        // Load preview comments for posts with comments
         for (const feed of data) {
           if (feed.comment_count > 0) {
             loadPreviewComments(feed.id);
@@ -126,6 +188,7 @@ export default function Dashboard() {
           'Authorization': `Bearer ${token}`
         }
       });
+      
       if (response.ok) {
         const data = await response.json();
         setMembers(data);
@@ -136,32 +199,85 @@ export default function Dashboard() {
   };
 
   const handleChatOpen = (chatData) => {
-    setSelectedChat(chatData);
-    setChatBoxOpen(true);
+    // Check if chat is already open
+    const existingChat = activeChatBoxes.find(chat => chat.id === chatData.id);
+    
+    if (!existingChat) {
+      // Add new chat box with positioning
+      const newChatBox = {
+        ...chatData,
+        position: activeChatBoxes.length
+      };
+      
+      // Limit to maximum 3 chat boxes
+      if (activeChatBoxes.length >= 3) {
+        setActiveChatBoxes([...activeChatBoxes.slice(1), newChatBox]);
+      } else {
+        setActiveChatBoxes([...activeChatBoxes, newChatBox]);
+      }
+    }
   };
 
-  const handleChatClose = () => {
-    setChatBoxOpen(false);
-    setSelectedChat(null);
+  const handleChatClose = (chatId) => {
+    setActiveChatBoxes(prev => 
+      prev.filter(chat => chat.id !== chatId)
+        .map((chat, index) => ({ ...chat, position: index }))
+    );
+  };
+
+  const handleCommentClick = (postId) => {
+    setSelectedPostId(postId);
+    setCommentDialogOpen(true);
+  };
+
+  const handleCommentDialogClose = () => {
+    setCommentDialogOpen(false);
+    setSelectedPostId(null);
+  };
+
+  const handleCommentAdded = () => {
+    loadFeeds();
+    if (selectedPostId) {
+      loadPreviewComments(selectedPostId);
+    }
+  };
+
+  const handleProfileEdit = () => {
+    setProfileDialogOpen(true);
+  };
+
+  const handleProfileUpdate = (updatedUser) => {
+    setUser(updatedUser);
+    localStorage.setItem('user', JSON.stringify(updatedUser));
   };
 
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+        <div className="flex flex-col items-center space-y-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+          <p className="text-gray-600">กำลังโหลด...</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <NavBar onLogout={handleLogout} onChatOpen={handleChatOpen} />
+      <NavBar 
+        onLogout={handleLogout} 
+        onChatOpen={handleChatOpen}
+      />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Left Sidebar - Members */}
           <div className="lg:col-span-1">
-            <MembersSidebar members={members} />
+            <MembersSidebar 
+              members={members}
+              onlineUsers={onlineUsers}
+              onChatOpen={handleChatOpen}
+            />
           </div>
 
           {/* Center - Feed */}
@@ -169,20 +285,29 @@ export default function Dashboard() {
             <CreatePost user={user} onPostCreated={loadFeeds} />
             
             <div className="space-y-6">
-              {feeds.map((feed) => (
-                <FeedPost
-                  key={feed.id}
-                  feed={feed}
-                  user={user}
-                  allComments={allComments}
-                  onDeletePost={loadFeeds}
-                  onLikePost={setFeeds}
-                  onCommentClick={() => {
-                    setSelectedPostId(feed.id);
-                    setCommentDialogOpen(true);
-                  }}
-                />
-              ))}
+              {feeds.length > 0 ? (
+                feeds.map((feed) => (
+                  <FeedPost
+                    key={feed.id}
+                    feed={feed}
+                    user={user}
+                    allComments={allComments}
+                    onDeletePost={loadFeeds}
+                    onLikePost={setFeeds}
+                    onCommentClick={() => handleCommentClick(feed.id)}
+                  />
+                ))
+              ) : (
+                <div className="bg-white rounded-lg shadow-sm p-8 text-center">
+                  <div className="text-gray-400 mb-4">
+                    <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">ยังไม่มีโพสต์</h3>
+                  <p className="text-gray-500">เริ่มต้นแชร์ความคิดของคุณกับเพื่อน ๆ</p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -192,25 +317,21 @@ export default function Dashboard() {
               user={user}
               feeds={feeds}
               members={members}
-              onEditProfile={() => setProfileDialogOpen(true)}
+              onlineUsers={onlineUsers}
+              socketConnected={socketConnected}
+              onEditProfile={handleProfileEdit}
             />
           </div>
         </div>
       </div>
 
       {/* Comment Dialog */}
-      {commentDialogOpen && (
+      {commentDialogOpen && selectedPostId && (
         <CommentDialog
           postId={selectedPostId}
           user={user}
-          onClose={() => {
-            setCommentDialogOpen(false);
-            setSelectedPostId(null);
-          }}
-          onCommentAdded={() => {
-            loadFeeds();
-            loadPreviewComments(selectedPostId);
-          }}
+          onClose={handleCommentDialogClose}
+          onCommentAdded={handleCommentAdded}
         />
       )}
 
@@ -219,20 +340,49 @@ export default function Dashboard() {
         <ProfileEditDialog
           user={user}
           onClose={() => setProfileDialogOpen(false)}
-          onUpdate={(updatedUser) => {
-            setUser(updatedUser);
-            localStorage.setItem('user', JSON.stringify(updatedUser));
-          }}
+          onUpdate={handleProfileUpdate}
         />
       )}
 
-      {/* Chat Box */}
-      {chatBoxOpen && selectedChat && (
-        <ChatBox
-          chat={selectedChat}
-          user={user}
-          onClose={handleChatClose}
-        />
+      {/* Chat Boxes */}
+      <div className="fixed bottom-0 right-4 flex space-x-2 z-40">
+        {activeChatBoxes.map((chat, index) => (
+          <div 
+            key={chat.id}
+            style={{ 
+              transform: `translateX(-${index * 320}px)`,
+              zIndex: 50 - index 
+            }}
+          >
+            <ChatBox
+              chat={chat}
+              user={user}
+              onClose={() => handleChatClose(chat.id)}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Connection Status Indicator */}
+      {!socketConnected && (
+        <div className="fixed top-20 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-pulse">
+          <div className="flex items-center space-x-2">
+            <div className="w-2 h-2 bg-white rounded-full animate-ping"></div>
+            <span className="text-sm font-medium">กำลังเชื่อมต่อแชท...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Online Users Count (optional) */}
+      {socketConnected && onlineUsers.length > 0 && (
+        <div className="fixed bottom-4 left-4 bg-green-500 text-white px-3 py-2 rounded-full shadow-lg z-30">
+          <div className="flex items-center space-x-2">
+            <div className="w-2 h-2 bg-white rounded-full"></div>
+            <span className="text-sm font-medium">
+              {onlineUsers.filter(u => u.is_online).length} คนออนไลน์
+            </span>
+          </div>
+        </div>
       )}
     </div>
   );

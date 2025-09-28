@@ -25,7 +25,9 @@ export async function GET(request, { params }) {
   try {
     const authHeader = request.headers.get('authorization');
     const decoded = verifyToken(authHeader);
-    const postId = params.id;
+
+    // ✅ ต้อง await
+    const { id: postId } = await params;
 
     const connection = await mysql.createConnection(dbConfig);
 
@@ -71,7 +73,10 @@ export async function POST(request, { params }) {
   try {
     const authHeader = request.headers.get('authorization');
     const decoded = verifyToken(authHeader);
-    const postId = params.id;
+
+    // ✅ ต้อง await
+    const { id: postId } = await params;
+
     const { content } = await request.json();
 
     if (!content || content.trim().length === 0) {
